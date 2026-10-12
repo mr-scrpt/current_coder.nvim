@@ -10,93 +10,107 @@ local default_config = {
 	create_commands = true,
 }
 
-local config = {}
+local config = vim.deepcopy(default_config)
 
-local function copy_current_file_to_direction(direction, return_focus)
-	local current_buf = vim.api.nvim_get_current_buf()
-	local current_file = vim.api.nvim_buf_get_name(current_buf)
-	local current_win = vim.api.nvim_get_current_win()
+-- split that puts the new window on the requested side
+local split_cmd = {
+	h = "leftabove vsplit",
+	l = "rightbelow vsplit",
+	k = "leftabove split",
+	j = "rightbelow split",
+}
+local side_name = { h = "left", l = "right", k = "upper", j = "lower", next = "next" }
 
-	-- Check if file exists
-	if current_file == "" then
-		if not config.silent then
-			vim.notify("Current buffer is not associated with a file", vim.log.levels.WARN)
-		end
-		return false
-	end
-
-	local current_pos = vim.api.nvim_win_get_cursor(0)
-
-	local success = pcall(vim.cmd, "wincmd " .. direction)
-	if not success then
-		if not config.silent then
-			vim.notify("Failed to switch to window " .. direction, vim.log.levels.ERROR)
-		end
-		return false
-	end
-
-	local new_win = vim.api.nvim_get_current_win()
-	if new_win == current_win then
-		if not config.silent then
-			vim.notify("No adjacent window in direction " .. direction, vim.log.levels.WARN)
-		end
-		return false
-	end
-
-	vim.cmd("edit " .. vim.fn.fnameescape(current_file))
-
-	vim.api.nvim_win_set_cursor(0, current_pos)
-
-	if return_focus then
-		vim.api.nvim_set_current_win(current_win)
-	end
-
+local function notify(msg, level)
 	if not config.silent then
-		local direction_name = direction == "h" and "left"
-			or direction == "l" and "right"
-			or direction == "j" and "bottom"
-			or direction == "k" and "top"
-			or direction
-		local filename = vim.fn.fnamemodify(current_file, ":t")
-		vim.notify(string.format("File '%s' copied to %s window", filename, direction_name))
+		vim.notify(msg, level or vim.log.levels.INFO, { title = "current_coder" })
+	end
+end
+
+-- An editor window: a normal (not floating) window showing a file buffer.
+-- File trees, quickfix, terminals and floats are never targets.
+local function is_editor(win)
+	if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_config(win).relative ~= "" then
+		return false
+	end
+	return vim.bo[vim.api.nvim_win_get_buf(win)].buftype == ""
+end
+
+local function editor_windows()
+	return vim.tbl_filter(is_editor, vim.api.nvim_tabpage_list_wins(0))
+end
+
+local function find_target(src, direction)
+	if direction == "next" then
+		local wins = editor_windows()
+		for i, win in ipairs(wins) do
+			if win == src then
+				local next_win = wins[i % #wins + 1]
+				return next_win ~= src and next_win or nil
+			end
+		end
+		return nil
+	end
+	local win = vim.fn.win_getid(vim.fn.winnr(direction))
+	return (win ~= src and is_editor(win)) and win or nil
+end
+
+--- Show the current buffer, with the same cursor and scroll position, in the
+--- window on the given side ("h", "j", "k", "l") or in the next editor window
+--- ("next"), and move there. When the current window is the only editor
+--- window, a split is opened on that side ("next" opens to the right). When
+--- there are two or more editor windows, no new window is ever created.
+---@param direction "h"|"j"|"k"|"l"|"next"
+---@return boolean
+function M.copy_to(direction)
+	local src = vim.api.nvim_get_current_win()
+	local buf = vim.api.nvim_get_current_buf()
+	if vim.bo[buf].buftype ~= "" or vim.api.nvim_buf_get_name(buf) == "" then
+		notify("Current buffer is not a file", vim.log.levels.WARN)
+		return false
+	end
+	local name = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ":t")
+
+	local target = find_target(src, direction)
+	if not target then
+		if #editor_windows() > 1 then
+			notify(("No window on the %s side"):format(side_name[direction]), vim.log.levels.WARN)
+			return false
+		end
+		-- a split shows the same buffer with the same cursor and view
+		vim.cmd(split_cmd[direction] or split_cmd.l)
+		notify(("'%s' opened in a new window"):format(name))
+		return true
 	end
 
+	local view = vim.fn.winsaveview()
+	vim.api.nvim_win_set_buf(target, buf)
+	vim.api.nvim_set_current_win(target)
+	vim.fn.winrestview(view)
+	notify(("'%s' opened in the %s window"):format(name, side_name[direction]))
 	return true
 end
 
-local function copy_to_next_window()
-	local current_buf = vim.api.nvim_get_current_buf()
-	local current_file = vim.api.nvim_buf_get_name(current_buf)
-
-	if current_file == "" then
-		if not config.silent then
-			vim.notify("Current buffer is not associated with a file", vim.log.levels.WARN)
-		end
-		return false
-	end
-
-	local current_pos = vim.api.nvim_win_get_cursor(0)
-
-	vim.cmd("wincmd w")
-
-	vim.cmd("edit " .. vim.fn.fnameescape(current_file))
-
-	vim.api.nvim_win_set_cursor(0, current_pos)
-
-	if not config.silent then
-		local filename = vim.fn.fnamemodify(current_file, ":t")
-		vim.notify(string.format("File '%s' copied to next window", filename))
-	end
-
-	return true
+M.copy_to_next = function()
+	return M.copy_to("next")
+end
+M.copy_to_left = function()
+	return M.copy_to("h")
+end
+M.copy_to_right = function()
+	return M.copy_to("l")
+end
+M.copy_to_up = function()
+	return M.copy_to("k")
+end
+M.copy_to_down = function()
+	return M.copy_to("j")
 end
 
-local function get_windows_info()
-	local windows = vim.api.nvim_list_wins()
+function M.get_windows_info()
 	local current_win = vim.api.nvim_get_current_win()
 	local info = {}
-
-	for _, win in ipairs(windows) do
+	for _, win in ipairs(vim.api.nvim_list_wins()) do
 		local buf = vim.api.nvim_win_get_buf(win)
 		local filename = vim.api.nvim_buf_get_name(buf)
 		table.insert(info, {
@@ -107,7 +121,6 @@ local function get_windows_info()
 			short_name = vim.fn.fnamemodify(filename, ":t"),
 		})
 	end
-
 	return info
 end
 
@@ -115,96 +128,45 @@ local function create_commands()
 	if not config.create_commands then
 		return
 	end
-
-	vim.api.nvim_create_user_command("CopyToNextWindow", copy_to_next_window, {
-		desc = "Copy current file to next window",
-	})
-
-	vim.api.nvim_create_user_command("CopyToLeft", function()
-		copy_current_file_to_direction("h", false)
-	end, {
-		desc = "Copy current file to left window",
-	})
-
-	vim.api.nvim_create_user_command("CopyToRight", function()
-		copy_current_file_to_direction("l", false)
-	end, {
-		desc = "Copy current file to right window",
-	})
-
-	vim.api.nvim_create_user_command("CopyToUp", function()
-		copy_current_file_to_direction("k", false)
-	end, {
-		desc = "Copy current file to upper window",
-	})
-
-	vim.api.nvim_create_user_command("CopyToDown", function()
-		copy_current_file_to_direction("j", false)
-	end, {
-		desc = "Copy current file to lower window",
-	})
-
+	local commands = {
+		{ "CopyToNextWindow", M.copy_to_next, "Show current file in the next window" },
+		{ "CopyToLeft", M.copy_to_left, "Show current file in the left window" },
+		{ "CopyToRight", M.copy_to_right, "Show current file in the right window" },
+		{ "CopyToUp", M.copy_to_up, "Show current file in the upper window" },
+		{ "CopyToDown", M.copy_to_down, "Show current file in the lower window" },
+	}
+	for _, cmd in ipairs(commands) do
+		vim.api.nvim_create_user_command(cmd[1], function()
+			cmd[2]()
+		end, { desc = cmd[3] })
+	end
 	vim.api.nvim_create_user_command("WindowsInfo", function()
-		local info = get_windows_info()
 		print("Windows information:")
-		for i, win_info in ipairs(info) do
+		for i, win_info in ipairs(M.get_windows_info()) do
 			local marker = win_info.is_current and " [current]" or ""
 			print(string.format("%d. %s%s", i, win_info.short_name, marker))
 		end
-	end, {
-		desc = "Show information about all windows",
-	})
+	end, { desc = "Show information about all windows" })
 end
 
 local function create_keymaps()
 	local keymaps = config.keymaps
-
-	if keymaps.copy_to_next then
-		vim.keymap.set("n", keymaps.copy_to_next, copy_to_next_window, {
-			desc = "Copy file to next window",
-			silent = true,
-		})
-	end
-
-	if keymaps.copy_to_left then
-		vim.keymap.set("n", keymaps.copy_to_left, function()
-			copy_current_file_to_direction("h", false)
-		end, {
-			desc = "Copy file to left window",
-			silent = true,
-		})
-	end
-
-	if keymaps.copy_to_right then
-		vim.keymap.set("n", keymaps.copy_to_right, function()
-			copy_current_file_to_direction("l", false)
-		end, {
-			desc = "Copy file to right window",
-			silent = true,
-		})
+	local maps = {
+		{ keymaps.copy_to_next, M.copy_to_next, "Show file in next window" },
+		{ keymaps.copy_to_left, M.copy_to_left, "Show file in left window" },
+		{ keymaps.copy_to_right, M.copy_to_right, "Show file in right window" },
+	}
+	for _, map in ipairs(maps) do
+		if map[1] then
+			vim.keymap.set("n", map[1], map[2], { desc = map[3], silent = true })
+		end
 	end
 end
 
 function M.setup(user_config)
 	config = vim.tbl_deep_extend("force", default_config, user_config or {})
-
 	create_commands()
 	create_keymaps()
 end
-
-M.copy_to_next = copy_to_next_window
-M.copy_to_left = function()
-	return copy_current_file_to_direction("h", false)
-end
-M.copy_to_right = function()
-	return copy_current_file_to_direction("l", false)
-end
-M.copy_to_up = function()
-	return copy_current_file_to_direction("k", false)
-end
-M.copy_to_down = function()
-	return copy_current_file_to_direction("j", false)
-end
-M.get_windows_info = get_windows_info
 
 return M

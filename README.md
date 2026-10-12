@@ -1,13 +1,19 @@
 # current_coder.nvim
 
-Copy the current file into an adjacent (or the next) window, preserving the
-cursor position. Handy for split-based workflows where you want the same buffer
-open side by side without re-typing the path.
+Show the current file in an adjacent (or the next) window, keeping the cursor
+and scroll position, and move there. Handy for split-based workflows where you
+want the same buffer side by side without re-typing the path.
+
+With a single editor window a split is opened on the requested side. With two
+or more editor windows no new window is created: the file goes into the
+neighbour, or you get a warning if there is none on that side. File trees,
+quickfix, terminals and floating windows are never used as targets.
 
 ## Features
 
-- Copy the current file to the left / right / up / down / next window
-- Keeps the cursor at the same position in the copied window
+- Show the current file in the left / right / up / down / next window
+- Opens a split when there is only one editor window, never a third one
+- Keeps the cursor and the view (scroll position)
 - User commands and configurable keymaps
 - Optional silent mode
 
